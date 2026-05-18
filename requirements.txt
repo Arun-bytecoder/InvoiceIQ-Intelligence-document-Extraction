@@ -7,3 +7,4 @@ scikit-learn
 faker
 flask
 flask-cors
+gunicorn
