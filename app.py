@@ -25,11 +25,12 @@ from flask_cors import CORS
 from flask import send_from_directory
 
 # ── Resolve project root ──────────────────────────────────────────────────────
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = Path(__file__).resolve().parent
 
-DIST_FOLDER = os.path.join(BASE_DIR, "frontend", "dist")
-ASSETS_FOLDER = os.path.join(DIST_FOLDER, "assets")# where app.py lives
-SRC_DIR  = BASE_DIR / "src"
+DIST_FOLDER = BASE_DIR / "frontend" / "dist"
+ASSETS_FOLDER = DIST_FOLDER / "assets"
+
+SRC_DIR = BASE_DIR / "src"
 UPLOAD_DIR = BASE_DIR / "uploads_tmp"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
@@ -57,23 +58,26 @@ MAX_HISTORY = 50
 
 @app.route('/assets/<path:filename>')
 def serve_assets(filename):
-    return send_from_directory(ASSETS_FOLDER, filename)
+    return send_from_directory(str(ASSETS_FOLDER), filename)
 
 # Serve frontend
-@app.route('/')
-def serve():
-    return send_from_directory(DIST_FOLDER, 'index.html')
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def serve_spa(path):
 
+    requested_path = DIST_FOLDER / path
 
-@app.route('/<path:path>')
-def catch_all(path):
-    file_path = os.path.join(DIST_FOLDER, path)
+    if path and requested_path.exists():
+        return send_from_directory(str(DIST_FOLDER), path)
 
-    if os.path.exists(file_path):
-        return send_from_directory(DIST_FOLDER, path)
+    index_file = DIST_FOLDER / "index.html"
 
-    return send_from_directory(DIST_FOLDER, 'index.html')
+    if index_file.exists():
+        return send_from_directory(str(DIST_FOLDER), "index.html")
 
+    return jsonify({
+        "message": "Frontend build not found"
+    }), 404
 # ─────────────────────────────────────────────────────────────────────────────
 # Helper — demo result (used when real extractor isn't available)
 # ─────────────────────────────────────────────────────────────────────────────
