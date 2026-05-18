@@ -4,6 +4,8 @@
 
 A pipeline for detecting, separating, and extracting structured data from invoice PDFs — including multi-invoice documents, repeated copies, and files with non-invoice pages. Uses classical NLP, layout analysis, and heuristics; **no LLM required** for core extraction.
 
+Live_url : https://invoiceiq-intelligence-document.onrender.com
+
 ## Project Structure
 
 ```
