@@ -48,8 +48,8 @@ history: list = []
 MAX_HISTORY = 50
 
 @app.route("/")
-def home():
-    return "Compylance API Running"
+def serve():
+    return send_from_directory(app.static_folder, "index.html")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helper — demo result (used when real extractor isn't available)
