@@ -25,7 +25,10 @@ from flask_cors import CORS
 from flask import send_from_directory
 
 # ── Resolve project root ──────────────────────────────────────────────────────
-BASE_DIR = Path(__file__).parent          # where app.py lives
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+DIST_FOLDER = os.path.join(BASE_DIR, "frontend", "dist")
+ASSETS_FOLDER = os.path.join(DIST_FOLDER, "assets")# where app.py lives
 SRC_DIR  = BASE_DIR / "src"
 UPLOAD_DIR = BASE_DIR / "uploads_tmp"
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -42,7 +45,7 @@ except ImportError as e:
 
 app = Flask(
     __name__,
-    static_folder=os.path.join("frontend", "dist"),
+    static_folder=DIST_FOLDER,
     static_url_path=""
 )
 
@@ -52,19 +55,25 @@ CORS(app)
 history: list = []
 MAX_HISTORY = 50
 
-@app.route("/")
+@app.route('/assets/<path:filename>')
+def serve_assets(filename):
+    return send_from_directory(ASSETS_FOLDER, filename)
+
+# Serve frontend
+@app.route('/')
 def serve():
-    return send_from_directory(app.static_folder, "index.html")
+    return send_from_directory(DIST_FOLDER, 'index.html')
 
 
-@app.route("/<path:path>")
-def static_proxy(path):
-    file_path = os.path.join(app.static_folder, path)
+@app.route('/<path:path>')
+def catch_all(path):
+    file_path = os.path.join(DIST_FOLDER, path)
 
     if os.path.exists(file_path):
-        return send_from_directory(app.static_folder, path)
+        return send_from_directory(DIST_FOLDER, path)
 
-    return send_from_directory(app.static_folder, "index.html")
+    return send_from_directory(DIST_FOLDER, 'index.html')
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Helper — demo result (used when real extractor isn't available)
 # ─────────────────────────────────────────────────────────────────────────────
