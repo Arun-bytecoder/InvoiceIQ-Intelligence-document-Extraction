@@ -40,7 +40,12 @@ except ImportError as e:
     print(f"[WARN] extractor not importable: {e}. Demo mode active.")
     EXTRACTOR_AVAILABLE = False
 
-app = Flask(__name__, static_folder="frontend/dist", static_url_path="")
+app = Flask(
+    __name__,
+    static_folder=os.path.join("frontend", "dist"),
+    static_url_path=""
+)
+
 CORS(app)
 
 # In-memory history (last 50 extractions)
@@ -51,6 +56,15 @@ MAX_HISTORY = 50
 def serve():
     return send_from_directory(app.static_folder, "index.html")
 
+
+@app.route("/<path:path>")
+def static_proxy(path):
+    file_path = os.path.join(app.static_folder, path)
+
+    if os.path.exists(file_path):
+        return send_from_directory(app.static_folder, path)
+
+    return send_from_directory(app.static_folder, "index.html")
 # ─────────────────────────────────────────────────────────────────────────────
 # Helper — demo result (used when real extractor isn't available)
 # ─────────────────────────────────────────────────────────────────────────────
