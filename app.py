@@ -22,6 +22,7 @@ import traceback
 from pathlib import Path
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
+from flask import send_from_directory
 
 # ── Resolve project root ──────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent          # where app.py lives
@@ -46,6 +47,9 @@ CORS(app)
 history: list = []
 MAX_HISTORY = 50
 
+@app.route("/")
+def home():
+    return "Compylance API Running"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helper — demo result (used when real extractor isn't available)
