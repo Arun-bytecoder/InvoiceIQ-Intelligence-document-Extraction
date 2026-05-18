@@ -31,6 +31,7 @@ DIST_FOLDER = BASE_DIR / "frontend" / "dist"
 ASSETS_FOLDER = DIST_FOLDER / "assets"
 
 SRC_DIR = BASE_DIR / "src"
+
 UPLOAD_DIR = BASE_DIR / "uploads_tmp"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
@@ -46,7 +47,7 @@ except ImportError as e:
 
 app = Flask(
     __name__,
-    static_folder=DIST_FOLDER,
+    static_folder=str(DIST_FOLDER),
     static_url_path=""
 )
 
