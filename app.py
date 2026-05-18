@@ -19,10 +19,10 @@ import time
 import uuid
 import os
 import traceback
-from pathlib import Path
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
-from flask import send_from_directory
+from pathlib import Path
+from flask import Flask, send_from_directory
 
 # ── Resolve project root ──────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent
@@ -35,6 +35,13 @@ SRC_DIR = BASE_DIR / "src"
 UPLOAD_DIR = BASE_DIR / "uploads_tmp"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
+app = Flask(
+    __name__,
+    static_folder=str(DIST_FOLDER),
+    static_url_path=""
+)
+
+
 import sys
 sys.path.insert(0, str(SRC_DIR))
 
@@ -45,40 +52,23 @@ except ImportError as e:
     print(f"[WARN] extractor not importable: {e}. Demo mode active.")
     EXTRACTOR_AVAILABLE = False
 
-app = Flask(
-    __name__,
-    static_folder=str(DIST_FOLDER),
-    static_url_path=""
-)
-
-CORS(app)
-
 # In-memory history (last 50 extractions)
 history: list = []
 MAX_HISTORY = 50
 
-@app.route('/assets/<path:filename>')
-def serve_assets(filename):
-    return send_from_directory(str(ASSETS_FOLDER), filename)
+@app.route("/")
+def serve():
+    return send_from_directory(str(DIST_FOLDER), "index.html")
 
-# Serve frontend
-@app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
-def serve_spa(path):
+def static_proxy(path):
+    file_path = DIST_FOLDER / path
 
-    requested_path = DIST_FOLDER / path
-
-    if path and requested_path.exists():
+    if file_path.exists():
         return send_from_directory(str(DIST_FOLDER), path)
 
-    index_file = DIST_FOLDER / "index.html"
+    return send_from_directory(str(DIST_FOLDER), "index.html")
 
-    if index_file.exists():
-        return send_from_directory(str(DIST_FOLDER), "index.html")
-
-    return jsonify({
-        "message": "Frontend build not found"
-    }), 404
 # ─────────────────────────────────────────────────────────────────────────────
 # Helper — demo result (used when real extractor isn't available)
 # ─────────────────────────────────────────────────────────────────────────────
