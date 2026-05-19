@@ -1,14 +1,12 @@
-# Python
 .venv/
 __pycache__/
 *.pyc
-
-# Node
-node_modules/
-dist/
-
-# Uploads
+*.pyo
 documents/
-
-# Environment
-.env
+*.pdf
+eval_train_results.json
+eval_test_results.json
+result.json
+node_modules/
+frontend/dist/
+frontend/node_modules/
