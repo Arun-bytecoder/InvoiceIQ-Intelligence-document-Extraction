@@ -6,7 +6,7 @@ import {
   ChevronDown, ChevronUp, Loader2, Package
 } from "lucide-react";
 
-const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const API = import.meta.env.VITE_API_URL || "";
 
 // ── Helpers ──
 const fmt = (n) =>
