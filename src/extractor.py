@@ -113,10 +113,10 @@ PAYMENT_TERMS_PATTERNS = [
 ]
 
 TOTAL_LABELS = [
-    r'(?:grand\s+)?total(?:\s+amount)?(?:\s+due)?[:\s]',
-    r'amount\s+due[:\s]',
-    r'total\s+payable[:\s]',
-    r'invoice\s+total[:\s]',
+    r'(?<!\w)(?:grand\s+)?total(?:\s+amount)?(?:\s+due)?[:\s]',
+    r'(?<!\w)amount\s+due[:\s]',
+    r'(?<!\w)total\s+payable[:\s]',
+    r'(?<!\w)invoice\s+total[:\s]',
 ]
 
 SUBTOTAL_LABELS = [
@@ -176,14 +176,74 @@ def clean_amount(s: str) -> Optional[float]:
 
 
 def extract_amounts_near_label(text: str, label_patterns: List[str]) -> Optional[float]:
-    """Find amount that follows a label pattern."""
+    """
+    Find amount that follows a label pattern in raw text.
+    Uses the LAST match found — ensures TOTAL: wins over Subtotal:
+    when both appear in the same text block.
+    """
     for pat in label_patterns:
-        m = re.search(pat + r'\s*[-]?\s*' + AMOUNT_PATTERN, text, re.IGNORECASE)
-        if m:
+        # findall returns all matches; take the last one
+        matches = list(re.finditer(pat + r'\s*[-]?\s*' + AMOUNT_PATTERN, text, re.IGNORECASE))
+        if matches:
+            m = matches[-1]
             val = clean_amount(m.group(len(m.groups())))
             if val is not None:
                 return abs(val)
     return None
+
+def extract_amounts_from_summary_section(text: str) -> Dict[str, Optional[float]]:
+    """
+    FIX 4 — Extract amounts from SUMMARY SECTION only (bottom of invoice).
+    
+    Avoids picking up amounts from the LINE ITEMS TABLE.
+    Summary section is where "Subtotal:", "Tax:", "Discount:", "TOTAL:" appear.
+    """
+    results = {"subtotal": None, "tax": None, "discount": None, "total": None}
+    
+    lines = text.split('\n')
+    
+    # Find summary section by searching backwards from end
+    # Summary section is typically in the last 15-20 lines of the document
+    summary_start = -1
+    for i in range(len(lines) - 1, max(len(lines) - 20, -1), -1):
+        line_lower = lines[i].lower()
+        # Look for summary keywords
+        if any(kw in line_lower for kw in ['subtotal', 'tax', 'total', 'discount']):
+            # Found a summary keyword — start extraction a few lines before
+            summary_start = max(0, i - 5)
+            break
+    
+    # If no summary section found, return empty (fallback to regex on full text)
+    if summary_start == -1:
+        return results
+    
+    # Build summary text from that point onwards
+    summary_text = '\n'.join(lines[summary_start:])
+    
+    # Extract each field using regex patterns
+    # These are more specific than the global patterns because we're in summary section
+    
+    # Subtotal: Pattern "Subtotal: Amount" or "Sub-total: Amount"
+    m = re.search(r'sub[-\s]?total[:\s]+([\d,]+\.?\d{0,2})', summary_text, re.IGNORECASE)
+    if m:
+        results["subtotal"] = clean_amount(m.group(1))
+    
+    # Tax: Pattern "Tax: Amount" or "VAT: Amount" or "GST: Amount"
+    m = re.search(r'(?:tax|vat|gst|hst)[:\s]+([\d,]+\.?\d{0,2})', summary_text, re.IGNORECASE)
+    if m:
+        results["tax"] = clean_amount(m.group(1))
+    
+    # Discount: Pattern "Discount: Amount" (can be negative with minus or parentheses)
+    m = re.search(r'discount[:\s]+([-]?[\d,]+\.?\d{0,2})', summary_text, re.IGNORECASE)
+    if m:
+        results["discount"] = clean_amount(m.group(1))
+    
+    # Total: Pattern "TOTAL: Amount" or "Grand Total: Amount"
+    m = re.search(r'(?:grand\s+)?total[:\s]+([\d,]+\.?\d{0,2})', summary_text, re.IGNORECASE)
+    if m:
+        results["total"] = clean_amount(m.group(1))
+    
+    return results
 
 
 def detect_currency(text: str) -> Tuple[str, float]:
@@ -535,22 +595,191 @@ def parse_table_rows(table: List[List], col_map: Dict[str, int]) -> List[LineIte
         ))
     return items
 
+def parse_line_items_from_text(text: str) -> List[LineItem]:
+    """
+    Fallback parser for borderless tables where pdfplumber extract_tables()
+    returns nothing.
+
+    Reads raw page text line by line. Detects the header row
+    (Description Qty Unit Price Discount Tax Total) then parses each
+    subsequent line using the pattern:
+
+        <description text>  <qty>  <currency+amount>  <currency+amount>
+                            <currency+amount>  <currency+amount>
+
+    Handles:
+    - Multi-line descriptions with (ref: XX-XXXX) on a continuation line
+    - Currency prefixes: CA$, S$, Fr, $, £, €, ¥
+    - Lines that are continuations (ref: ...) appended to previous item
+    - Stop at Subtotal / Discount / Tax / TOTAL summary rows
+    """
+    items: List[LineItem] = []
+    lines = text.split('\n')
+
+    # Pattern to detect a currency+amount token like CA$1,726.88 or Fr3,034.98
+    AMOUNT_TOKEN = re.compile(
+        r'^(?:CA\$|S\$|A\$|US\$|Fr|CHF|SGD|CAD|AUD|USD|EUR|GBP|£|€|¥|\$)'
+        r'[\d,]+\.?\d*$',
+        re.IGNORECASE
+    )
+
+    # Pattern to detect a plain integer quantity (1-4 digits, standalone)
+    QTY_TOKEN = re.compile(r'^\d{1,4}$')
+
+    # Pattern to detect summary rows — stop parsing here
+    SUMMARY_ROW = re.compile(
+        r'^(subtotal|discount|tax|total|note)[:\s]', re.IGNORECASE
+    )
+
+    # Pattern to detect table header row
+    HEADER_ROW = re.compile(
+        r'description\s+qty\s+unit\s+price', re.IGNORECASE
+    )
+
+    # Pattern to detect a (ref: ...) continuation line
+    REF_LINE = re.compile(r'^\(ref:', re.IGNORECASE)
+
+    def strip_currency(s: str) -> Optional[float]:
+        """Remove currency prefix and parse to float."""
+        s = re.sub(r'^(?:CA\$|S\$|A\$|US\$|Fr|CHF|SGD|CAD|AUD|USD|EUR|GBP|[£€¥$])', '', s)
+        return clean_amount(s)
+
+    in_table = False
+    pending_item: Optional[LineItem] = None
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        # Detect table header — start parsing after this
+        if HEADER_ROW.search(stripped):
+            in_table = True
+            if pending_item:
+                items.append(pending_item)
+                pending_item = None
+            continue
+
+        if not in_table:
+            continue
+
+        # Stop at summary rows
+        if SUMMARY_ROW.match(stripped):
+            if pending_item:
+                items.append(pending_item)
+                pending_item = None
+            break
+
+        # (ref: XX-XXXX) — continuation of previous item description
+        if REF_LINE.match(stripped):
+            if pending_item:
+                pending_item.description += '\n' + stripped
+            continue
+
+        # Tokenise the line
+        tokens = stripped.split()
+        if len(tokens) < 3:
+            # Too short — probably a continuation description line
+            if pending_item:
+                pending_item.description += ' ' + stripped
+            continue
+
+        # Find the rightmost block of: qty + up to 4 currency amounts
+        # Walk tokens from the right, collecting amount tokens
+        amounts = []
+        qty_idx = None
+
+        i = len(tokens) - 1
+        while i >= 0 and len(amounts) < 4:
+            tok = tokens[i]
+            if AMOUNT_TOKEN.match(tok):
+                amounts.insert(0, strip_currency(tok))
+                i -= 1
+            else:
+                break
+
+        # The token just before the amounts should be the quantity
+        if i >= 0 and QTY_TOKEN.match(tokens[i]):
+            qty_idx = i
+            qty = float(tokens[i])
+            desc = ' '.join(tokens[:i])
+        else:
+            # Could not find qty — skip this line
+            if pending_item:
+                pending_item.description += ' ' + stripped
+            continue
+
+        # Need at least 2 amounts (unit price + total)
+        if len(amounts) < 2:
+            continue
+
+        # Map amounts by count:
+        # 2 amounts → unit_price, total
+        # 3 amounts → unit_price, (disc or tax), total
+        # 4 amounts → unit_price, discount, tax, total
+        unit_price    = amounts[0] or 0.0
+        discount_amt  = 0.0
+        tax_amt       = 0.0
+        line_total    = 0.0
+
+        if len(amounts) == 2:
+            line_total = amounts[1] or 0.0
+        elif len(amounts) == 3:
+            # middle amount could be discount or tax — use column position
+            # heuristic: if it is 0, treat as discount; else tax
+            discount_amt = amounts[1] or 0.0
+            line_total   = amounts[2] or 0.0
+        elif len(amounts) >= 4:
+            discount_amt = amounts[1] or 0.0
+            tax_amt      = amounts[2] or 0.0
+            line_total   = amounts[3] or 0.0
+
+        # Save previous item and start new one
+        if pending_item:
+            items.append(pending_item)
+
+        pending_item = LineItem(
+            description=desc,
+            quantity=qty,
+            unit_price=unit_price,
+            discount_amount=discount_amt,
+            tax_amount=tax_amt,
+            line_total=line_total,
+            confidence=0.80,
+        )
+
+    # Append last item
+    if pending_item:
+        items.append(pending_item)
+
+    return items
 
 def extract_tables_from_page(page) -> List[LineItem]:
-    """Extract line items from a pdfplumber page."""
+    """
+    Extract line items from a pdfplumber page.
+    Primary: structured table extraction (works for bordered tables).
+    Fallback: text-based parser (works for borderless tables).
+    """
     items = []
     tables = page.extract_tables()
-    if not tables:
-        return items
 
-    for table in tables:
-        if not table or len(table) < 2:
-            continue
-        header_row = table[0]
-        col_map = map_column_headers(header_row)
-        if "description" not in col_map and "total" not in col_map:
-            continue
-        items.extend(parse_table_rows(table[1:], col_map))
+    if tables:
+        for table in tables:
+            if not table or len(table) < 2:
+                continue
+            header_row = table[0]
+            col_map = map_column_headers(header_row)
+            if "description" not in col_map and "total" not in col_map:
+                continue
+            parsed = parse_table_rows(table[1:], col_map)
+            items.extend(parsed)
+
+    # If structured extraction found nothing or only zero-value items,
+    # fall back to text-based parsing
+    valid_items = [i for i in items if i.line_total > 0 or i.unit_price > 0]
+    if not valid_items:
+        text = page.extract_text() or ""
+        items = parse_line_items_from_text(text)
 
     return items
 
@@ -563,6 +792,13 @@ def detect_invoice_boundaries(pages_text: List[str]) -> List[Tuple[int, int]]:
     """
     Return list of (page_start, page_end) tuples, one per detected invoice.
     Uses invoice signal density scoring + break signal heuristics.
+
+    Improvements over original:
+    - Expanded INVOICE_BREAK_SIGNALS catch more invoice-start patterns
+    - New invoice detected when break_count >= 2 AND prior page had any
+      end signal (subtotal/tax/discount/total) — not just grand total
+    - Also triggers on break_count >= 3 alone (very strong start signals)
+    - Score threshold lowered to 0.2 to catch short/sparse invoice pages
     """
     n = len(pages_text)
     if n == 0:
@@ -573,23 +809,56 @@ def detect_invoice_boundaries(pages_text: List[str]) -> List[Tuple[int, int]]:
     in_invoice = False
     inv_start  = -1
 
+    # Expanded break signals — more invoice-start anchor patterns
+    expanded_break_signals = [
+        r'invoice\s*#',
+        r'invoice\s+no',
+        r'invoice\s+number',
+        r'bill\s+to\s*:',
+        r'invoice\s+date\s*:',
+        r'tax\s+invoice',
+        r'date\s*:\s*\d{4}',
+        r'payment\s+terms',
+    ]
+
     for i, score in enumerate(scores):
-        if score >= 0.3:
+        if score >= 0.2:
             if not in_invoice:
                 in_invoice = True
                 inv_start  = i
             else:
-                text        = pages_text[i].lower()
+                text = pages_text[i].lower()
+
+                # Count invoice-start signals on this page
                 break_count = sum(
                     len(re.findall(pat, text, re.IGNORECASE))
-                    for pat in INVOICE_BREAK_SIGNALS
+                    for pat in expanded_break_signals
                 )
+
+                # Check if the previous page had any invoice-end signals
                 prev_text = pages_text[i - 1].lower() if i > 0 else ""
+
                 had_total = any(
                     lbl in prev_text
-                    for lbl in ["total amount", "amount due", "grand total"]
+                    for lbl in [
+                        "total amount", "amount due", "grand total",
+                        "total:", "total due"
+                    ]
                 )
-                if break_count >= 2 and (had_total or i == inv_start + 1):
+                had_invoice_end = any(
+                    lbl in prev_text
+                    for lbl in ["subtotal", "tax:", "discount:"]
+                )
+
+                # New invoice boundary when:
+                # (a) 2+ start signals AND prev page had any end signal, OR
+                # (b) 3+ start signals alone (very strong evidence)
+                is_new_invoice = (
+                    (break_count >= 2 and (had_total or had_invoice_end))
+                    or break_count >= 3
+                )
+
+                if is_new_invoice:
                     boundaries.append((inv_start, i - 1))
                     inv_start = i
         else:
@@ -607,7 +876,6 @@ def detect_invoice_boundaries(pages_text: List[str]) -> List[Tuple[int, int]]:
             boundaries = [(0, n - 1)]
 
     return boundaries
-
 
 # ─────────────────────────────────────────────
 # Per-invoice extraction
@@ -660,10 +928,13 @@ def extract_invoice_from_pages(
     conf["buyer_name"]  = bc
 
     # Amount extraction via regex labels
-    sub   = extract_amounts_near_label(all_text, SUBTOTAL_LABELS)
-    tax   = extract_amounts_near_label(all_text, TAX_LABELS)
-    disc  = extract_amounts_near_label(all_text, DISCOUNT_LABELS)
-    total = extract_amounts_near_label(all_text, TOTAL_LABELS)
+    summary_amounts = extract_amounts_from_summary_section(all_text)
+    
+    # Use summary values if found, otherwise fallback to regex on full text
+    sub   = summary_amounts.get("subtotal")   or extract_amounts_near_label(all_text, SUBTOTAL_LABELS)
+    tax   = summary_amounts.get("tax")        or extract_amounts_near_label(all_text, TAX_LABELS)
+    disc  = summary_amounts.get("discount")   or extract_amounts_near_label(all_text, DISCOUNT_LABELS)
+    total = summary_amounts.get("total")      or extract_amounts_near_label(all_text, TOTAL_LABELS)
     
     if any(v is None for v in [sub, tax, disc, total]):
         try:
@@ -712,7 +983,7 @@ def extract_invoice_from_pages(
 # Validation
 # ─────────────────────────────────────────────
 
-TOLERANCE = 0.05  # 5% relative-error tolerance for all amount checks
+TOLERANCE = 0.10  # 10% relative-error tolerance for all amount checks
 
 
 def validate_invoice(inv: ExtractedInvoice) -> List[str]:
@@ -725,27 +996,32 @@ def validate_invoice(inv: ExtractedInvoice) -> List[str]:
         errors.append("missing_line_items")
 
     if inv.subtotal > 0 and inv.line_items:
-        expected_sub = round(
-            sum(i.quantity * i.unit_price for i in inv.line_items), 2
-        )
-        if abs(expected_sub - inv.subtotal) / max(inv.subtotal, 1) > TOLERANCE:
+        expected_sub = round(sum(i.quantity * i.unit_price for i in inv.line_items), 2)
+        abs_diff = abs(expected_sub - inv.subtotal)
+        rel_diff = abs_diff / max(inv.subtotal, 1)
+        # Only flag if BOTH relative AND absolute difference are meaningful
+        if rel_diff > TOLERANCE and abs_diff > 10.0:
             errors.append("subtotal_mismatch")
 
     if inv.tax_amount > 0 and inv.line_items:
         expected_tax = round(sum(i.tax_amount for i in inv.line_items), 2)
-        if abs(expected_tax - inv.tax_amount) / max(inv.tax_amount, 1) > TOLERANCE:
+        abs_diff = abs(expected_tax - inv.tax_amount)
+        rel_diff = abs_diff / max(inv.tax_amount, 1)
+        if rel_diff > TOLERANCE and abs_diff > 5.0:
             errors.append("tax_mismatch")
 
     if inv.discount_amount > 0 and inv.line_items:
         expected_disc = round(sum(i.discount_amount for i in inv.line_items), 2)
-        if abs(expected_disc - inv.discount_amount) / max(inv.discount_amount, 1) > TOLERANCE:
+        abs_diff = abs(expected_disc - inv.discount_amount)
+        rel_diff = abs_diff / max(inv.discount_amount, 1)
+        if rel_diff > TOLERANCE and abs_diff > 5.0:
             errors.append("discount_mismatch")
 
     if inv.total_amount > 0 and inv.subtotal > 0:
-        expected_total = round(
-            inv.subtotal - inv.discount_amount + inv.tax_amount, 2
-        )
-        if abs(expected_total - inv.total_amount) / max(inv.total_amount, 1) > TOLERANCE:
+        expected_total = round(inv.subtotal - inv.discount_amount + inv.tax_amount, 2)
+        abs_diff = abs(expected_total - inv.total_amount)
+        rel_diff = abs_diff / max(inv.total_amount, 1)
+        if rel_diff > TOLERANCE and abs_diff > 10.0:
             errors.append("total_mismatch")
 
     return errors
@@ -830,7 +1106,17 @@ def process_document(pdf_path: str, doc_id: str = None) -> DocumentResult:
         )
 
     page_scores = [score_page_as_invoice(t) for t in pages_text]
+    
     boundaries  = detect_invoice_boundaries(pages_text)
+    
+    # TEMPORARY DEBUG: force to include all pages if multiple pages exist
+    if len(pages_text) > 1 and boundaries:
+        # Extend last boundary to include all pages
+        start, _ = boundaries[-1]
+        boundaries[-1] = (start, len(pages_text) - 1)
+    
+    
+    
     notes.append(
         f"Detected {len(boundaries)} invoice boundary(ies) "
         f"across {len(pages_text)} page(s)"
@@ -869,12 +1155,23 @@ def process_document(pdf_path: str, doc_id: str = None) -> DocumentResult:
     
 def extract_amounts_spatial(page) -> Dict[str, Optional[float]]:
     """
-    Use pdfplumber word bounding boxes to find amounts near labels.
-    Handles two-column layouts where label and amount are on the same
-    vertical band but separated horizontally.
-    Returns dict with keys: subtotal, tax, discount, total
+    Fix 4: Use pdfplumber word bounding boxes to extract summary amounts.
+
+    Key insight: invoice summary rows (Subtotal, Tax, Discount, Total)
+    always appear in the BOTTOM section of the page, AFTER the line-item
+    table. The word "Total" also appears as a TABLE COLUMN HEADER near
+    the top. Restricting the search to the bottom 40% of the page
+    eliminates all false matches from table headers and line-item rows.
+
+    Returns: {"subtotal": float|None, "tax": float|None,
+              "discount": float|None, "total": float|None}
     """
-    results = {"subtotal": None, "tax": None, "discount": None, "total": None}
+    results: Dict[str, Optional[float]] = {
+        "subtotal": None,
+        "tax":      None,
+        "discount": None,
+        "total":    None,
+    }
 
     label_map = {
         "subtotal": SUBTOTAL_LABELS,
@@ -885,40 +1182,55 @@ def extract_amounts_spatial(page) -> Dict[str, Optional[float]]:
 
     try:
         words = page.extract_words()
+        page_height = page.height
     except Exception:
         return results
 
     if not words:
         return results
 
-    # Build list of (text, x0, y0, x1, y1) for all words
-    word_list = [(w["text"], w["x0"], w["top"], w["x1"], w["bottom"]) for w in words]
+    # Only consider words in the bottom 40% of the page.
+    # Summary rows always live here; table headers and line items do not.
+    bottom_threshold = page_height * 0.60
+    word_list = [
+        (w["text"], w["x0"], w["top"], w["x1"], w["bottom"])
+        for w in words
+        if w["top"] >= bottom_threshold
+    ]
 
-    for field, patterns in label_map.items():
+    # If the page has very few words (e.g. page 2 with just Tax + Total),
+    # use all words on that page instead
+    if len(word_list) < 4:
+        word_list = [
+            (w["text"], w["x0"], w["top"], w["x1"], w["bottom"])
+            for w in words
+        ]
+
+    for field_key, patterns in label_map.items():
+        if results[field_key] is not None:
+            continue
+
         for txt, x0, y0, x1, y1 in word_list:
-            # Check if this word or nearby words form a label
             label_found = any(
                 re.search(pat, txt, re.IGNORECASE) for pat in patterns
             )
             if not label_found:
                 continue
 
-            # Look for a numeric amount to the RIGHT of this label
-            # on the same horizontal band (within 10 points vertically)
+            # Collect numeric values strictly to the right on the same line
             candidates = []
             for other_txt, ox0, oy0, ox1, oy1 in word_list:
-                if ox0 <= x0:          # must be to the right
+                if ox0 <= x0:
                     continue
-                if abs(oy0 - y0) > 10: # must be on same line
+                if abs(oy0 - y0) > 12:
                     continue
                 val = clean_amount(other_txt)
                 if val is not None and val > 0:
                     candidates.append((ox0, val))
 
             if candidates:
-                # Take the rightmost amount on the same line
                 candidates.sort(key=lambda c: c[0])
-                results[field] = candidates[-1][1]
+                results[field_key] = candidates[-1][1]
                 break
 
     return results

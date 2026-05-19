@@ -1,24 +1,24 @@
 {
   "n_documents": 100,
   "n_errors": 0,
-  "avg_processing_time_s": 0.502,
-  "document_type_accuracy": 0.94,
-  "invoice_count_mae": 0.26,
+  "avg_processing_time_s": 0.576,
+  "document_type_accuracy": 1.0,
+  "invoice_count_mae": 0.14,
   "field_extraction_scores": {
     "invoice_number": 1.0,
-    "issue_date": 0.9787,
-    "currency": 0.9149,
-    "subtotal": 0.6007,
-    "tax_amount": 0.6064,
-    "total_amount": 0.4071,
-    "payment_terms_days": 0.9787
+    "issue_date": 1.0,
+    "currency": 1.0,
+    "subtotal": 0.9937,
+    "tax_amount": 0.9937,
+    "total_amount": 0.9987,
+    "payment_terms_days": 1.0
   },
-  "overall_field_score": 0.7838,
+  "overall_field_score": 0.998,
   "validation_error_detection": {
-    "precision": 0.4082,
-    "recall": 0.9524,
-    "f1": 0.5714
+    "precision": 0.4471,
+    "recall": 1.0,
+    "f1": 0.6179
   },
-  "line_item_count_mae": 6.6738,
+  "line_item_count_mae": 0.0,
   "processing_errors": []
 }

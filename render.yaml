@@ -1,6 +1,11 @@
 services:
   - type: web
-    name: compylance-api
-    env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    name: invoiceiq
+    runtime: python
+    buildCommand: |
+      pip install -r requirements.txt
+      cd frontend && npm install && npm run build
+    startCommand: uvicorn api:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.9
