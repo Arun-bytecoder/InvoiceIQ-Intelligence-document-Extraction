@@ -157,7 +157,9 @@ function ExtractPage({ setHistory, onResult }) {
     const t0 = performance.now();
 
     try {
-      const { data } = await axios.post(`${API}/api/extract`, form);
+      const { data } = await axios.post(`${API}/api/extract`, form, {
+        timeout: 120000,  // 2 minutes — gives Render time to wake up
+      });
       const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
 
       // Push each invoice to history
@@ -724,6 +726,11 @@ export default function App() {
   const [result,  setResult]  = useState(null);
   const [filename, setFilename] = useState("");
   const [history, setHistory] = useState([]);
+
+  // Wake up the Render instance as soon as the page loads
+  useEffect(() => {
+    fetch(`${API}/health`).catch(() => {});
+  }, []);
 
   // Navigate to result page after successful extraction
   const handleResult = (data, fname) => {
